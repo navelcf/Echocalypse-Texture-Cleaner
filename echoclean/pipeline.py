@@ -59,8 +59,12 @@ def stage2(net, blocks, o, pool, dev, passes=2, tta=True, half=True):
     Each pass re-compresses the current result with the game's encoder, shows the refiner how that differs from the game's
     data, and takes its correction (8 flips/rotations averaged if tta). The results of the passes are averaged."""
     x = B.decode(blocks); acc = 0
+    prev_pm = prev_re = None
     for _ in range(passes):
-        inp = refiner_input(x, o, blocks, encoder.encode_blocks_mp(finish(o), pool))
+        cur_pm = finish(o)
+        re = encoder.encode_blocks_mp(cur_pm, pool, prev_pm=prev_pm, prev_blocks=prev_re)
+        prev_pm, prev_re = cur_pm, re
+        inp = refiner_input(x, o, blocks, re)
         o = _ensemble(net, torch.from_numpy(inp).to(dev).permute(2, 0, 1)[None], tta, half).permute(1, 2, 0).cpu().numpy(); acc = acc + o
     return acc / passes
 
@@ -71,7 +75,7 @@ class Pipeline:
         for p in (stage1_path, refiner_path):
             if p and not os.path.exists(p): raise FileNotFoundError(f'{p} not found. Download the model files from the GitHub release into models/ (see README).')
         s.net1 = models.load_stage1(stage1_path, s.dev); s.ref = models.load_refiner(refiner_path, s.dev) if refiner_path else None
-        s.pool = mp.get_context('spawn').Pool(procs or max(1, (os.cpu_count() or 4) - 2), maxtasksperchild=64) if s.ref is not None else None
+        s.pool = mp.get_context('spawn').Pool(procs or max(1, (os.cpu_count() or 4) - 2), maxtasksperchild=64) if (s.ref is not None and not encoder.has_fast()) else None
 
     @torch.no_grad()
     def __call__(s, blocks, w=None, h=None, tta=True, refine=True, half=True, passes=2):

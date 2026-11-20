@@ -20,5 +20,5 @@ PY
 if command -v g++ >/dev/null; then CXX="g++"; elif command -v clang++ >/dev/null; then CXX="clang++"; else CXX="${PYTHON:-python3} -m ziglang c++"; fi
 echo "compiling with: $CXX"
 # -ffp-contract=off: without it a compiler that targets this CPU's FMA instructions (zig does) rounds a few blocks differently
-$CXX -O2 -w -std=gnu++03 -fpermissive -ffp-contract=off -shared -fPIC ${ETCPACK_CXXFLAGS:-} etcpack_lib.cxx ETCPACK/source/etcdec.cxx ETCPACK/source/image.cxx -o libetcpack.so
+$CXX -O2 -w -std=gnu++03 -fpermissive -ffp-contract=off -pthread -shared -fPIC ${ETCPACK_CXXFLAGS:-} etcpack_lib.cxx ETCPACK/source/etcdec.cxx ETCPACK/source/image.cxx -o libetcpack.so
 echo "built $(pwd)/libetcpack.so"
