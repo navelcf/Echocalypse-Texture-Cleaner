@@ -9,7 +9,11 @@ from .blocks import NSIDE
 
 
 class RB(nn.Module):
-    def __init__(s, c): super().__init__(); s.a = nn.Conv2d(c, c, 3, padding=1); s.b = nn.Conv2d(c, c, 3, padding=1); s.r = nn.ReLU()
+    def __init__(s, c):
+        super().__init__()
+        s.a = nn.Conv2d(c, c, 3, padding=1)
+        s.b = nn.Conv2d(c, c, 3, padding=1)
+        s.r = nn.ReLU(inplace=True)
     def forward(s, x): return x + s.b(s.r(s.a(x)))
 
 
@@ -23,17 +27,22 @@ class SideNet(nn.Module):
         super().__init__()
         s.down = nn.PixelUnshuffle(2); s.head = nn.Conv2d((4 + NSIDE) * 4, c, 3, padding=1)
         s.body = nn.Sequential(*[RB(c) for _ in range(n)]); s.tail = nn.Conv2d(c, 16, 3, padding=1); s.up = nn.PixelShuffle(2)
-    def forward(s, inp): return _valid(inp[:, :4] + s.up(s.tail(s.body(s.head(s.down(inp))))))
+    def forward(s, inp):
+        x = inp.to(s.head.weight.dtype) if inp.dtype != s.head.weight.dtype else inp
+        return _valid(inp[:, :4].float() + s.up(s.tail(s.body(s.head(s.down(x))))).float())
 
 
 class Refiner(nn.Module):
-    """input (B, 13, H, W): texture (4), stage-1 output (4), decode(encode(stage-1 output)) - texture (4), mismatch mask (1)."""
-    def __init__(s, c=128, n=8):
+    """input (B, in_ch, H, W): texture (4), stage-1 output (4), decode(encode(stage-1 output)) - texture (4), mismatch mask (1) [+ optional extra side channels]."""
+    def __init__(s, c=128, n=8, in_ch=13):
         super().__init__()
-        s.down = nn.PixelUnshuffle(2); s.head = nn.Conv2d(13 * 4, c, 3, padding=1)
+        s.in_ch = in_ch
+        s.down = nn.PixelUnshuffle(2); s.head = nn.Conv2d(in_ch * 4, c, 3, padding=1)
         s.body = nn.Sequential(*[RB(c) for _ in range(n)]); s.tail = nn.Conv2d(c, 16, 3, padding=1); s.up = nn.PixelShuffle(2)
         nn.init.zeros_(s.tail.weight); nn.init.zeros_(s.tail.bias)                                    # starts as "no correction"
-    def forward(s, inp): return _valid(inp[:, 4:8] + s.up(s.tail(s.body(s.head(s.down(inp))))))
+    def forward(s, inp):
+        x = inp.to(s.head.weight.dtype) if inp.dtype != s.head.weight.dtype else inp
+        return _valid(inp[:, 4:8].float() + s.up(s.tail(s.body(s.head(s.down(x))))).float())
 
 
 def _shape(sd): return sd['head.weight'].shape[0], len({k.split('.')[1] for k in sd if k.startswith('body.')})
@@ -47,7 +56,9 @@ def load_stage1(path, dev='cpu'):
 
 
 def load_refiner(path, dev='cpu'):
-    sd = torch.load(path, map_location='cpu', weights_only=True)['net']; net = Refiner(*_shape(sd)); net.load_state_dict(sd); return net.to(dev).eval()
+    sd = torch.load(path, map_location='cpu', weights_only=True)['net']
+    c, n = _shape(sd); in_ch = sd['head.weight'].shape[1] // 4
+    net = Refiner(c, n, in_ch=in_ch); net.load_state_dict(sd); return net.to(dev).eval()
 
 
 def save(net, path, **meta):

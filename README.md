@@ -9,9 +9,9 @@ models are trained on the real damage and not on an approximation of it.
 | On a real game texture with a known clean original (held out from training) | PSNR | Soft edges | Seam error | SSIM |
 |---|---|---|---|---|
 | Raw game texture | 36.38 dB | 36.05 dB | 0.880 | 0.9112 |
-| Stage 1, single pass | 43.24 dB | 43.74 dB | 0.497 | 0.9922 |
-| Stage 1, 8x self-ensemble | 43.54 dB | 44.07 dB | 0.487 | 0.9930 |
-| Full pipeline (default) | 43.67 dB | 44.24 dB | 0.468 | 0.9930 |
+| Stage 1, single pass | 43.30 dB | 43.81 dB | 0.495 | 0.9923 |
+| Stage 1, 8x self-ensemble | 43.60 dB | 44.14 dB | 0.485 | 0.9930 |
+| Full pipeline (default) | 43.74 dB | 44.32 dB | 0.466 | 0.9931 |
 
 Seam error is the render error when a piece is drawn over its own skin colour, counting only line-like error, in 8-bit
 levels; a clean original scores 0. Seams get much fainter. They do not all disappear: very small pieces (a mouth patch a
@@ -50,8 +50,8 @@ script downloads and builds it on your machine).
 ## Setup
 
 Linux with Python 3.10 or newer. On Windows use WSL. An NVIDIA or AMD GPU is strongly recommended: a 2048x2048 texture
-takes about 18 seconds at default settings (or 4.4 seconds with `--no-ensemble`, measured on a Radeon RX 9060 XT) and
-many minutes on a CPU.
+takes about 16.7 seconds at default settings (15.6 seconds with `--compile`, or 2.9 seconds with `--no-ensemble --compile`,
+measured on a Radeon RX 9060 XT) and many minutes on a CPU.
 
 ```bash
 git clone https://github.com/oedon81/Echocalypse-Texture-Cleaner
@@ -93,9 +93,10 @@ python clean.py path/to/knight_spine/600090 -o cleaned/600090 --copy-others
 
 | Option | Effect |
 |---|---|
-| `--no-ensemble` | One pass instead of eight flips/rotations, in both stages: 4.4 s instead of 18.2 s per 2048x2048 texture, about 0.3 dB lower (43.38 dB) |
-| `--refiner-passes N` | How often stage 2 re-compresses and corrects (default 2). 1 takes 13.8 s and is 0.02 dB lower; 3 takes 22.7 s and is 0.01 dB higher |
-| `--no-refiner` | Skip stage 2: no encoder library needed, 9.1 s, about 0.13 dB lower (43.54 dB) |
+| `--compile` | Compile models with `torch.compile` (~15% faster GPU inference after a one-time ~6–8 s warmup; auto-uses `ziglang` if no system C compiler is installed) |
+| `--no-ensemble` | One pass instead of eight flips/rotations, in both stages: ~3.0 s (~2.9 s with `--compile`) instead of ~16.7 s per 2048x2048 texture, about 0.30 dB lower (43.44 dB) |
+| `--refiner-passes N` | How often stage 2 re-compresses and corrects (default 2). 1 is faster and 0.03 dB lower (43.71 dB); 3 takes ~19.6 s (`--compile`) and is 0.01 dB higher (43.75 dB / seam 0.465) |
+| `--no-refiner` | Skip stage 2: no encoder library needed, ~7.5 s (`--compile`), about 0.14 dB lower (43.60 dB) |
 | `--fp32` | Full precision on the GPU: twice as slow, same scores as the default half precision |
 | `--cpu` | Run without a GPU |
 
@@ -190,10 +191,11 @@ Things learned the hard way:
    for, and the block's colour mode. Besides plain pixel error it is trained with SSIM loss and on the texture composited
    over its own colour, which is where seams show.
 3. **Self-ensemble.** The texture is cleaned in eight flips and rotations and the results are averaged.
-4. **Stage 2, the refiner** (12.0M parameters, 256 channels x 10 blocks). A clean original always re-compresses to exactly
-   the game's blocks. The refiner is shown how the stage-1 output re-compresses and which blocks do not match, and corrects
-   it. It runs twice (the second time on its own result, re-compressed again), each time in eight flips and rotations, and
-   the two results are averaged. Nothing is rounded to 8 bits until the very end.
+4. **Stage 2, the refiner** (12.0M parameters, 256 channels x 10 blocks, 17 input channels). A clean original always re-compresses to exactly
+   the game's blocks. The refiner is shown how the stage-1 output re-compresses, which blocks mismatch (overall, RGB-only, and alpha-only),
+   and each texel's position inside its 4x4 block, and corrects it. It is trained with unrolled Pass-2 rollouts so Pass 2/3 converge instead
+   of oscillating; at inference it runs twice in eight flips and rotations and blends passes `(1/3, 2/3)`. Nothing is rounded to 8 bits until
+   the very end. Legacy 13-channel refiner checkpoints are still loaded automatically.
 
 What did not help, in case you want to try: downsampling/U-Net architectures (NAFNet), normalization layers (LayerNorm/GroupNorm),
 attention/transformer blocks (PLKSR, DRCT), extra ETC2 bitstream side channels (~0.015 dB on stage 1, 0.00 dB on refiner),
@@ -209,6 +211,7 @@ verified-lossless dataset (~3,480 PNGs), cosine decay, SSIM loss, and EMA weight
 | v1.0 | 42.97 dB / seam 0.512 | First release |
 | v1.1 | 43.07 dB / seam 0.502 | Exact encoder (100% of blocks); refiner gets un-rounded input, runs in 8 flips/rotations and twice; both models fine-tuned with the exact encoder |
 | v2.0 | 43.67 dB / seam 0.468 | Scaled Stage 1 (32.1M) and Refiner (12.0M) trained on ~3,480 verified-lossless textures with EMA and SSIM loss; multi-threaded C++ encoder with zero/dirty-block skipping |
+| v2.1 | 43.74 dB / seam 0.466 | Stage 1 fine-tuned with RMSE + L2 coherent-seam loss on 160x160 patches; 17-ch unrolled Pass-2 Refiner (split RGB/alpha mismatch + block coords) with `(1/3, 2/3)` 2-pass blend; GPU side-features & refiner inputs, `--compile`, and faster bit-exact C++ encoder (`-O3`, exact-zero early-outs, constant-alpha LUT, split RGB/alpha dirty skip) |
 
 Most of the v1.1 gain is in the code, not the models: the v1.0 models score 43.05 dB in the v1.1 pipeline. All numbers
 are from one texture, so differences of a few hundredths of a dB are within what a different test image could change.

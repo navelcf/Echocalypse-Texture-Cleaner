@@ -9,12 +9,29 @@ ssim      SSIM of that same composite over the soft band (1 = identical)
 """
 import numpy as np, torch, torch.nn.functional as F
 
+_GAUSS_CACHE = {}
+
+
+def _gauss_kernel(s, C, device, dtype):
+    key = (float(s), int(C), device, dtype)
+    pair = _GAUSS_CACHE.get(key)
+    if pair is None:
+        with torch.inference_mode(False), torch.no_grad():
+            k = int(2 * np.ceil(3 * s) + 1)
+            x = torch.arange(k, device=device, dtype=torch.float32) - k // 2
+            g = torch.exp(-x * x / (2 * s * s)); g = (g / g.sum()).to(dtype)
+            kh = g.view(1, 1, 1, k).expand(C, 1, 1, k).contiguous()
+            kv = g.view(1, 1, k, 1).expand(C, 1, k, 1).contiguous()
+        pair = (k // 2, kh, kv)
+        _GAUSS_CACHE[key] = pair
+    return pair
+
 
 def gauss(t, s):
-    k = int(2 * np.ceil(3 * s) + 1); x = torch.arange(k, device=t.device) - k // 2
-    g = torch.exp(-x.float() ** 2 / (2 * s * s)); g = g / g.sum(); C = t.shape[1]
-    t = F.conv2d(F.pad(t, (k // 2, k // 2, 0, 0), mode='replicate'), g.view(1, 1, 1, k).repeat(C, 1, 1, 1), groups=C)
-    return F.conv2d(F.pad(t, (0, 0, k // 2, k // 2), mode='replicate'), g.view(1, 1, k, 1).repeat(C, 1, 1, 1), groups=C)
+    C = t.shape[1]
+    pad, kh, kv = _gauss_kernel(s, C, t.device, t.dtype)
+    t = F.conv2d(F.pad(t, (pad, pad, 0, 0), mode='replicate'), kh, groups=C)
+    return F.conv2d(F.pad(t, (0, 0, pad, pad), mode='replicate'), kv, groups=C)
 
 
 def own_colour(t, sigmas=(1.5, 3, 6, 12, 24)):
@@ -26,8 +43,12 @@ def own_colour(t, sigmas=(1.5, 3, 6, 12, 24)):
 
 
 def ssim_map(a, b, sigma=1.5):
-    C1, C2 = 0.01 ** 2, 0.03 ** 2; ma, mb = gauss(a, sigma), gauss(b, sigma)
-    va = gauss(a * a, sigma) - ma * ma; vb = gauss(b * b, sigma) - mb * mb; cov = gauss(a * b, sigma) - ma * mb
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    a, b = a.float(), b.float()
+    ma, mb = gauss(a, sigma), gauss(b, sigma)
+    va = (gauss(a * a, sigma) - ma * ma).clamp_(min=0.0)
+    vb = (gauss(b * b, sigma) - mb * mb).clamp_(min=0.0)
+    cov = gauss(a * b, sigma) - ma * mb
     return ((2 * ma * mb + C1) * (2 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2))
 
 
